@@ -1,227 +1,337 @@
-
 # Sales ETL & Data Warehouse — GitHub README
 
-<div align="center">
+*T-SQL • Snowflake Schema • Dimension–Fact Architecture • Full Load ETL*
 
-**A modern SQL Server Data Warehouse project for Sales Analytics**
+## Overview
 
-_T-SQL • Star Schema • Dimension–Fact Architecture • Full Load ETL_
+This project implements a Sales Data Warehouse using SQL Server, T-SQL, and a Snowflake Schema architecture.
 
-</div>
+The ETL pipeline extracts data from the Northwind source system, transforms and cleans the data, loads normalized dimensions, and finally populates the central sales fact table.
 
----
-
-## 📌 Overview
-
-This repository contains the complete source code and documentation for a **Sales Data Warehouse** built on **Microsoft SQL Server**.
-
-The project implements a clean **Staging → Dimension → Fact** architecture with a denormalized star schema, enabling reliable, auditable, and analytics-ready sales reporting for BI tools such as Power BI and Grafana.
+The main goal is to provide a structured analytical model that supports reporting, business intelligence, and sales analysis.
 
 ---
 
-## 🗂️ Repo Contents
+## Data Warehouse Architecture
 
-| Path | Description |
-|---|---|
-| `sql/schema` | Database, schema, and table creation scripts (DDL) |
-| `sql/etl` | Stored procedures for ETL loading |
-| `sql/quality` | Data quality and validation queries |
-| `data-catalog/` | Operational and business metadata documentation |
-| `docs/` | Supplemental design and architecture notes |
+The Data Warehouse follows a Snowflake Schema where selected dimensions are normalized into related sub-dimensions.
 
-```
-.
-├── sql
-│   ├── schema/          # DDL for stg, dim, fact, etl layers
-│   ├── etl/             # ETL stored procedures (full load)
-│   └── quality/         # Data quality & validation queries
-├── data-catalog/        # DATA_CATALOG.md
-├── docs/                # Architecture & design documentation
-└── README.md
-```
+The central fact table is:
 
----
+* `sale.fact_order`
 
-## 🏗️ Architecture
+The main dimensions are:
 
-The warehouse follows a classic layered design:
+* `sale.dim_customer`
+* `sale.dim_employee`
+* `sale.dim_product`
+* `sale.dim_shipper`
+* `sale.dim_supplier`
+* `sale.dim_geography`
+* `sale.dim_date`
 
-```
-Source Systems
-      │
-      ▼
-  [stg] Staging Layer        → Raw ingestion, minimal transformation
-      │
-      ▼
-  [dim] Dimension Layer      → Business entities (Product, Customer, Date)
-      │
-      ▼
-  [fact] Fact Layer          → Measurable transactions (Sales)
-      │
-      ▼
-    BI / Reporting
+### Snowflake Schema
+
+```text
+                         Dim Supplier
+                              |
+                              v
+                         Dim Product
+                              |
+                              v
+Dim Date ----------------> Fact Order <---------------- Dim Customer
+                              ^
+                              |
+                        Dim Employee
+                              ^
+                              |
+                         Dim Shipper
+
+
+                 Dim Geography
+                  /     |      \
+                 v      v       v
+            Customer Employee Supplier
 ```
 
-### Key Design Decisions
+### Dimension Relationships
 
-- **Denormalized Star Schema** — the `Product` dimension includes category attributes directly, reducing required joins.
-- **Full Load ETL** — dimensions and facts are rebuilt on each run for a consistent, reproducible state.
-- **Surrogate Keys** — every dimension has a dedicated integer key (`ProductKey`, `CustomerKey`, etc.).
-- **Unknown Members** — missing lookups map to surrogate key `0` to preserve referential integrity.
-- **Atomic Transactions** — all ETL runs under transactional control with error handling.
+The Snowflake Schema uses the following relationships:
+
+```text
+Fact Order
+   |
+   +-- Customer ----------------> Geography
+   |
+   +-- Employee ----------------> Geography
+   |
+   +-- Product -----------------> Supplier ----------------> Geography
+   |
+   +-- Shipper
+   |
+   +-- Date
+```
+
+This means that `Geography` and `Supplier` are not directly stored in the fact table.
+
+Supplier information is reached through:
+
+```text
+Fact Order → Product → Supplier
+```
+
+Geography information can be reached through:
+
+```text
+Fact Order → Customer → Geography
+Fact Order → Employee → Geography
+Fact Order → Product → Supplier → Geography
+```
 
 ---
 
-## 🧱 Schema Layers
+## Key Design Decisions
 
-| Schema | Type | Responsibility |
-|---|---|---|
-| `stg` | Staging | Stores raw extracted source data |
-| `dim` | Dimension | Stores descriptive attributes for analysis |
-| `fact` | Fact | Stores measurable business transactions |
-| `etl` | Operational | Stores ETL logs and execution metadata |
+### Snowflake Schema
+
+The warehouse uses a Snowflake Schema instead of a fully denormalized Star Schema.
+
+Selected dimensions are normalized to reduce duplication and maintain clearer relationships between related entities.
+
+### Product → Supplier
+
+Supplier information is separated from the Product dimension.
+
+```text
+Fact Order
+    |
+ Product
+    |
+ Supplier
+```
+
+The fact table therefore stores `product_key` rather than a direct `supplier_key`.
+
+### Customer / Employee / Supplier → Geography
+
+Geography is implemented as a separate dimension.
+
+```text
+Customer  ----\
+Employee  ----- > Geography
+Supplier  ----/
+```
+
+The fact table does not store `geography_key` directly.
 
 ---
 
-## 📚 Core Tables
+## Schema Layers
+
+The database is organized into the following layers:
+
+```text
+stage
+  ↓
+sale.dim_geography
+  ↓
+sale.dim_customer
+sale.dim_employee
+sale.dim_supplier
+  ↓
+sale.dim_product
+sale.dim_shipper
+  ↓
+sale.fact_order
+```
+
+---
+
+## Core Tables
 
 ### Dimensions
 
-- **`dim.Product`** — product attributes, including denormalized category and brand.
-- **`dim.Customer`** — customer attributes and location.
-- **`dim.Date`** — reusable calendar dimension.
+* `sale.dim_geography`
+* `sale.dim_customer`
+* `sale.dim_employee`
+* `sale.dim_supplier`
+* `sale.dim_product`
+* `sale.dim_shipper`
+* `sale.dim_date`
 
 ### Fact
 
-- **`fact.Sales`** — grain is one row per order line, with quantity, price, and amount calculations.
-
-### Staging
-
-- **`stg.SalesOrder`**, `stg.Customer`, `stg.Product` — raw source snapshots.
+* `sale.fact_order`
 
 ---
 
-## 🔧 ETL Pipeline
+## Fact Table Grain
 
-### Load Sequence
+The fact table is maintained at the following grain:
 
-1. Load staging tables from source.
-2. Clean and validate incoming records.
-3. Load dimension tables.
-4. Resolve surrogate keys.
-5. Load the fact table.
-6. Write execution logs.
+> One row per Order ID + Product ID.
 
-### Standard Cleansing Pattern
+This grain is preserved during the ETL process by aggregating duplicate order-line records before inserting into the fact table.
 
-```sql
-COALESCE(
-    NULLIF(LTRIM(RTRIM(SourceColumn)), N''),
-    N'Unknown'
-)
+The fact table directly references:
+
+* Customer
+* Employee
+* Product
+* Shipper
+* Date
+
+Supplier and Geography are resolved through the normalized dimension relationships.
+
+---
+
+## ETL Process
+
+The ETL process follows this sequence:
+
+1. Load Geography
+2. Load Customer
+3. Load Employee
+4. Load Supplier
+5. Load Product
+6. Load Shipper
+7. Load Fact Order
+
+The dimension loads use Type 1 SCD behavior.
+
+---
+
+## Snowflake Dimension Resolution
+
+### Product → Supplier
+
+```text
+Fact Order
+    |
+    v
+Dim Product
+    |
+    v
+Dim Supplier
 ```
 
-### Transaction Pattern
+### Customer → Geography
 
-```sql
-SET XACT_ABORT ON;
+```text
+Fact Order
+    |
+    v
+Dim Customer
+    |
+    v
+Dim Geography
+```
 
-BEGIN TRY
-    BEGIN TRANSACTION;
+### Employee → Geography
 
-    -- ETL operations here
+```text
+Fact Order
+    |
+    v
+Dim Employee
+    |
+    v
+Dim Geography
+```
 
-    COMMIT TRANSACTION;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-        ROLLBACK TRANSACTION;
-    THROW;
-END CATCH;
+### Supplier → Geography
+
+```text
+Fact Order
+    |
+    v
+Dim Product
+    |
+    v
+Dim Supplier
+    |
+    v
+Dim Geography
 ```
 
 ---
 
-## 📊 KPI Examples
+## Fact Calculations
 
-| KPI | Formula |
-|---|---|
-| **Gross Sales** | `SUM(GrossAmount)` |
-| **Net Sales** | `SUM(NetAmount)` |
-| **Total Discount** | `SUM(DiscountAmount)` |
-| **Total Quantity Sold** | `SUM(Quantity)` |
-| **Order Count** | `COUNT(DISTINCT OrderKey)` |
+The ETL calculates:
 
----
+* Gross Amount
+* Discount Amount
+* Net Amount
+* Freight Amount
 
-## ✅ Data Quality
-
-The pipeline includes validation queries for:
-
-- Duplicate source lines
-- Invalid or negative quantities
-- Inconsistent financial calculations
-- Orphan fact records
-- Unknown member mapping rates
+Freight is allocated proportionally across order lines based on quantity.
 
 ---
 
-## 🧰 Prerequisites
+## Data Quality Checks
 
-- **Microsoft SQL Server** (2019+ recommended)
-- SQL Server Management Studio (or equivalent)
-- Permission to create databases, schemas, tables, and stored procedures
+The ETL process includes checks for:
+
+* Duplicate orders
+* Duplicate order lines
+* Invalid quantities
+* Invalid prices
+* Null dimension keys
+* Standardized discount values
+* Missing dimension lookups
+
+Unknown dimension members are resolved using the default key where applicable.
 
 ---
 
-## 🚀 Getting Started
+## Example KPIs
 
-### 1. Clone the repository
+The warehouse can support common sales KPIs such as:
 
-```bash
-git clone https://github.com/your-org/sales-dwh.git
-cd sales-dwh
+* Total Sales
+* Net Sales
+* Total Quantity
+* Average Order Value
+* Discount Amount
+* Freight Cost
+* Sales by Customer
+* Sales by Employee
+* Sales by Product
+* Sales by Supplier
+* Sales by Geography
+* Sales by Date
+
+---
+
+## Final Data Warehouse Model
+
+```text
+                         Dim Supplier
+                              |
+                              v
+                         Dim Product
+                              |
+                              v
+Dim Date ----------------> Fact Order <---------------- Dim Customer
+                              ^
+                              |
+                        Dim Employee
+                              ^
+                              |
+                         Dim Shipper
+
+
+                 Dim Geography
+                  /     |      \
+                 v      v       v
+            Customer Employee Supplier
 ```
 
-### 2. Create the database and schema
-
-Execute the DDL scripts under `sql/schema` against your target SQL Server instance.
-
-### 3. Deploy the ETL procedures
-
-Execute the stored procedures under `sql/etl`. Each procedure adopts the full load strategy.
-
-### 4. Run the pipeline
-
-```sql
-EXEC etl.usp_load_dim_northwind;
-EXEC etl.usp_load_fact_order_full;
-```
-
-### 5. Validate
-
-Run the validation queries under `sql/quality` to confirm data integrity.
+The final model follows a Snowflake Schema by normalizing Supplier and Geography relationships while keeping the Fact Order table focused on measurable sales transactions.
 
 ---
 
-## 📖 Documentation
+## Maintainer
 
-| Document | Purpose |
-|---|---|
-| `DATA_CATALOG.md` | Complete metadata, definitions, and business rules |
-
----
-
-## 🛠️ Roadmap
-
-- [ ] Add incremental load support for large-volume tables
-- [ ] Introduce Slowly Changing Dimension (SCD) Type 2 for history
-- [ ] Add automated monitoring in Grafana / Loki
-- [ ] Publish curated reporting views
-- [ ] Add CI checks for schema drift
-
----
-
-## 👤 Maintainers
-
-**Reza Afkhamnia** — Data Warehouse Developer & BI Developer
+**Ghazal Salehi**
