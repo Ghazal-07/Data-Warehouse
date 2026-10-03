@@ -335,3 +335,4 @@ The final model follows a Snowflake Schema by normalizing Supplier and Geography
 ## Maintainer
 
 **Ghazal Salehi**
+Developed as part of my learning journey through the Data Warehouse course by Reza Afkhamnia, with the implementation and adaptations made as part of my own practice and project development.
